@@ -5,24 +5,24 @@ import torch
 import glob
 
 # Local imports
-from data import get_dataset_stats, GPUNormalizer, create_dataloader, DeviceDataLoader, create_val_dataloader
+from data import create_dataloader, DeviceDataLoader, create_val_dataloader
 from sae_factory import get_sae_model
 from metric import evaluate_sae, compute_pairwise_stability, aggregate_metrics
 from train import train_sae
-from common import GracefulKiller, get_checkpoint_dir, is_training_complete
+from common import GracefulKiller, get_checkpoint_dir, is_training_complete, criterion, create_optimizer_scheduler
 from eval import run_evaluation
 
 
 # --- Configuration ---
 CONFIG = {
     'num_saes': 1,
-    'd_model': 5_000,
-    'k_fraction': 0.01,
-    'epochs': 40,
+    'd_model': 32_000,
+    'k_fraction': 0.0025,
+    'epochs': 30,
     'batch_size': 16_384,
     'prefetch_factor': 2,
     'num_workers': 8,
-    'lr': 1e-3,
+    'lr': 5e-4,
     # Approximate number of samples in the training dataset
     'dataset_size': 250_000_000,
     #RA SAE:
@@ -31,26 +31,23 @@ CONFIG = {
     #SI SAE
     'per_init': 0.1,
 
+    # Reanimation / dead feature recovery
+    'reanimate_coeff': 0.33,
+    'resample_every_n_epochs': 0,
+    'dead_threshold': 1e-6,
+
     #Meta or validation
     'checkpoint_every_n_epochs': 5,
     # Validation and early stopping settings
     'val_batch_size': 16_384,  # Batch size for validation
     'val_num_workers': 4,      # Workers for validation loader
     'val_subset_fraction': 1.0, # Use all validation data (or reduce for speed)
-    'early_stopping_patience': 5,  # Stop if no improvement for N epochs
+    'early_stopping_patience': 10,  # Stop if no improvement for N epochs
     'early_stopping_min_delta': 0,  # Minimum improvement to count
 }
 
 
-def criterion(x, x_hat, pre_codes, codes, dictionary):
-    """Reconstruction loss"""
-    loss = (x - x_hat).square().mean()
-
-
-    return loss
-
-
-def build_run_suffix(model_type, config):
+def build_run_suffix(model_type, config, n_centers=None):
     """Build a descriptive suffix for checkpoint/output file naming."""
     k = int(config['k_fraction'] * config['d_model'])
     run_suffix = f"_d{config['d_model']}_k{k}"
@@ -58,6 +55,8 @@ def build_run_suffix(model_type, config):
         run_suffix += f"_delta{config['delta']}"
     elif model_type == "SI-SAE":
         run_suffix += f"_per_init{config['per_init']}"
+        if n_centers is not None and n_centers != config['d_model']:
+            run_suffix += f"_nc{n_centers}"
     return run_suffix
 
 
@@ -76,10 +75,15 @@ def main():
     parser.add_argument("--checkpoint-every", type=int, default=None,
                         help="Save checkpoint every N epochs")
 
+    parser.add_argument("--d-model", type=int, default=None,
+                        help="Override d_model (number of SAE features)")
     parser.add_argument("--k-fraction", type=float, default=None,
                         help="Override k_fraction (e.g., 0.01, 0.05, 0.1)")
     parser.add_argument("--per-init", type=float, default=None,
                         help="Override per_init for SI-SAE (e.g., 0, 0.01, 0.1, 0.4, 0.8)")
+    parser.add_argument("--n-centers", type=int, default=None,
+                        help="Number of K-means centers for SI-SAE (default: d_model). "
+                             "Remaining atoms initialized as pure noise.")
 
     # Eval-only mode
     parser.add_argument("--eval-only", action="store_true",
@@ -96,6 +100,16 @@ def main():
     parser.add_argument("--val-subset", type=float, default=None,
                         help="Fraction of validation shards to use (0.0-1.0)")
 
+    # Reanimation arguments
+    parser.add_argument("--reanimate-coeff", type=float, default=None,
+                        help="Auxiliary reanimation loss weight (default: 0.33)")
+    parser.add_argument("--resample-every", type=int, default=None,
+                        help="Resample dead features every N epochs (0=disabled)")
+    parser.add_argument("--dead-threshold", type=float, default=None,
+                        help="Frequency below which a feature is considered dead")
+    parser.add_argument("--no-reanimate", action="store_true",
+                        help="Disable reanimation entirely (sets coeff to 0)")
+
     # Performance arguments
     parser.add_argument("--mixed-precision", action="store_true",
                         help="Use bfloat16 mixed precision training (recommended for A100)")
@@ -111,10 +125,24 @@ def main():
     if args.val_subset is not None:
         CONFIG['val_subset_fraction'] = args.val_subset
 
+    if args.d_model is not None:
+        CONFIG['d_model'] = args.d_model
     if args.k_fraction is not None:
         CONFIG['k_fraction'] = args.k_fraction
     if args.per_init is not None:
         CONFIG['per_init'] = args.per_init
+
+    # Reanimation overrides
+    if args.no_reanimate:
+        CONFIG['reanimate_coeff'] = 0.0
+        CONFIG['resample_every_n_epochs'] = 0
+    else:
+        if args.reanimate_coeff is not None:
+            CONFIG['reanimate_coeff'] = args.reanimate_coeff
+        if args.resample_every is not None:
+            CONFIG['resample_every_n_epochs'] = args.resample_every
+    if args.dead_threshold is not None:
+        CONFIG['dead_threshold'] = args.dead_threshold
 
     k = int(CONFIG['k_fraction'] * CONFIG['d_model'])
     print(f"k_fraction: {CONFIG['k_fraction']} (k={k})")
@@ -135,7 +163,8 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    run_suffix = build_run_suffix(args.model_type, CONFIG)
+    n_centers = args.n_centers  # None means use d_model (all K-means)
+    run_suffix = build_run_suffix(args.model_type, CONFIG, n_centers=n_centers)
 
     # Update checkpoint directory call to use the suffix
     checkpoint_dir = get_checkpoint_dir(args.checkpoint_dir, args.model_type, run_suffix)
@@ -156,15 +185,13 @@ def main():
     print(f"Detected embedding dimension: {d_brain}")
     print(f"Estimated dataset size: {CONFIG['dataset_size']} ({len(shard_files)} shards x {samples_per_shard} samples)")
 
-    mean, std = get_dataset_stats(args.shard_directory)
-    normalizer = GPUNormalizer(mean, std).to(device)
     raw_loader = create_dataloader(
         args.shard_directory,
         CONFIG['batch_size'],
         num_workers=CONFIG['num_workers'],
         prefetch_factor=CONFIG['prefetch_factor']
     )
-    loader = DeviceDataLoader(raw_loader, device, normalizer)
+    loader = DeviceDataLoader(raw_loader, device)
 
     # --- Eval-only mode ---
     if args.eval_only:
@@ -187,15 +214,6 @@ def main():
         else:
             print(f"Found {len(val_shard_files)} validation shard files")
 
-            # Try to get validation stats, fall back to training stats
-            try:
-                val_mean, val_std = get_dataset_stats(args.val_dir)
-                val_normalizer = GPUNormalizer(val_mean, val_std).to(device)
-                print("Using validation-specific normalization stats")
-            except FileNotFoundError:
-                print("No validation stats found, using training stats for normalization")
-                val_normalizer = normalizer
-
             raw_val_loader = create_val_dataloader(
                 args.val_dir,
                 CONFIG['val_batch_size'],
@@ -203,7 +221,7 @@ def main():
                 prefetch_factor=2,
                 subset_fraction=CONFIG['val_subset_fraction']
             )
-            val_loader = DeviceDataLoader(raw_val_loader, device, val_normalizer)
+            val_loader = DeviceDataLoader(raw_val_loader, device)
             print(f"Validation enabled with {len(val_shard_files)} shards "
                   f"(using {CONFIG['val_subset_fraction']*100:.0f}%)")
 
@@ -241,7 +259,7 @@ def main():
             print(f"Loading existing completed model from {save_path}")
             sae = get_sae_model(
                 args.model_type, d_brain, CONFIG['d_model'], k, device, loader, CONFIG,
-                centers_dir=args.centers_dir,
+                centers_dir=args.centers_dir, n_centers=n_centers,
             )
             sae.load_state_dict(torch.load(save_path, map_location=device, weights_only=True))
         else:
@@ -249,35 +267,11 @@ def main():
 
             sae = get_sae_model(
                 args.model_type, d_brain, CONFIG['d_model'], k, device, loader, CONFIG,
-                centers_dir=args.centers_dir,
+                centers_dir=args.centers_dir, n_centers=n_centers,
             )
 
-            optimizer = torch.optim.Adam(sae.parameters(), lr=CONFIG['lr'])
-            num_step_epoch = CONFIG['dataset_size'] // CONFIG['batch_size']
-
-            total_steps = num_step_epoch * CONFIG['epochs']
-            warmup_steps = total_steps //4
-
-            warmup = torch.optim.lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=0.001,
-                end_factor=1.0,
-                total_iters=warmup_steps
-            )
-
-            # 3. Define the Decay Phase
-            decay = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=(total_steps - warmup_steps),
-                eta_min=CONFIG['lr'] * 0.05
-            )
-
-            # 4. Chain them together
-            scheduler = torch.optim.lr_scheduler.SequentialLR(
-                optimizer,
-                schedulers=[warmup, decay],
-                milestones=[warmup_steps]
-            )
+            total_steps = (CONFIG['dataset_size'] // CONFIG['batch_size']) * CONFIG['epochs']
+            optimizer, scheduler = create_optimizer_scheduler(sae, CONFIG['lr'], total_steps)
 
             logs = train_sae(
                 sae, loader, criterion, optimizer,
@@ -294,7 +288,11 @@ def main():
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=CONFIG['early_stopping_min_delta'],
                 # Performance
-                use_mixed_precision=args.mixed_precision
+                use_mixed_precision=args.mixed_precision,
+                # Reanimation
+                reanimate_coeff=CONFIG['reanimate_coeff'],
+                resample_every_n_epochs=CONFIG['resample_every_n_epochs'],
+                dead_threshold=CONFIG['dead_threshold'],
             )
 
             torch.save(sae.state_dict(), save_path)

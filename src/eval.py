@@ -4,7 +4,6 @@ import torch
 import glob
 
 # Local imports
-from data import get_dataset_stats, GPUNormalizer, create_dataloader, DeviceDataLoader
 from sae_factory import get_sae_model
 from metric import evaluate_sae, compute_pairwise_stability, aggregate_metrics
 from common import get_checkpoint_dir

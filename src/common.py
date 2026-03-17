@@ -1,6 +1,7 @@
 import os
 import signal
 import torch
+import torch.optim as optim
 
 
 class GracefulKiller:
@@ -38,3 +39,21 @@ def is_training_complete(checkpoint_dir, sae_index, total_epochs):
     if checkpoint.get('training_complete', False):
         return True
     return checkpoint['epoch'] >= total_epochs - 1
+
+
+def criterion(x, x_hat, pre_codes, codes, dictionary):
+    """Reconstruction loss."""
+    return (x - x_hat).square().mean()
+
+
+def create_optimizer_scheduler(model, lr, total_steps):
+    """Create Adam optimizer with linear warmup + cosine annealing scheduler."""
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    warmup_steps = total_steps // 4
+    warmup = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.001, end_factor=1.0, total_iters=warmup_steps)
+    decay = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=(total_steps - warmup_steps), eta_min=lr * 0.05)
+    scheduler = optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, decay], milestones=[warmup_steps])
+    return optimizer, scheduler

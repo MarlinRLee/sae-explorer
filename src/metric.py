@@ -43,18 +43,27 @@ def effective_rank(D):
     return torch.exp(entropy).item()
 
 
-def coherence(D):
+def coherence(D, chunk_size=2048):
     """
     Compute the coherence (max non-diagonal cosine similarity).
-    
+
     Coherence = max_{i≠j} |D_i^T D_j|
+
+    Uses chunked computation to avoid OOM for large dictionaries (e.g. d=32000).
     """
     D_norm = D / (D.norm(dim=1, keepdim=True) + Epsilon)
-    gram = torch.matmul(D_norm, D_norm.T)
-    gram_abs = torch.abs(gram)
-    mask = ~torch.eye(gram.shape[0], dtype=torch.bool, device=gram.device)
-    non_diagonal = gram_abs[mask]
-    return non_diagonal.max().item()
+    n = D_norm.shape[0]
+    max_val = 0.0
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        chunk = torch.matmul(D_norm[start:end], D_norm.T)  # (chunk, n)
+        chunk.abs_()
+        # Zero out the diagonal entries within this chunk
+        diag_indices = torch.arange(start, end, device=D.device)
+        local_indices = diag_indices - start
+        chunk[local_indices, diag_indices] = 0.0
+        max_val = max(max_val, chunk.max().item())
+    return max_val
 
 
 def stability(D1, D2):

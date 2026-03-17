@@ -7,7 +7,11 @@ Trains multiple SI-SAE models with controlled seeds and tracks:
 3. Pairwise similarity between models with same init+noise (same seed)
 4. Pairwise similarity between models with different noise (different seed)
 
-Results are saved as JSON for plotting with plot_similarity.py.
+Results are saved as JSON and figures are generated automatically.
+
+Usage:
+    python similarity_study.py <shard_directory> [options]
+    python similarity_study.py --plot-only path/to/similarity_study_results.json [--output fig.pdf]
 """
 
 import os
@@ -22,14 +26,18 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from data import get_dataset_stats, GPUNormalizer, create_dataloader, DeviceDataLoader
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+from data import create_dataloader, create_val_dataloader, DeviceDataLoader
 from utils import cosine_kmeans
 from overcomplete.sae import TopKSAE
 from overcomplete.sae.train import extract_input
 from overcomplete.metrics import l2, l0_eps
 from overcomplete.sae.trackers import DeadCodeTracker
 from train import EarlyStopping, validate
-from common import GracefulKiller
+from common import GracefulKiller, criterion, create_optimizer_scheduler
 
 
 # ── Similarity metrics ──────────────────────────────────────────────────────
@@ -96,13 +104,6 @@ def create_si_sae(d_brain, d_model, k, device, centers, per_init, init_seed):
 
 
 # ── Training with similarity tracking ───────────────────────────────────────
-
-def criterion(x, x_hat, pre_codes, codes, dictionary):
-    """Reconstruction loss"""
-    loss = (x - x_hat).square().mean()
-
-    return loss
-
 
 def train_with_similarity_tracking(
     model, dataloader, optimizer, scheduler,
@@ -243,14 +244,139 @@ def train_with_similarity_tracking(
     return dict(logs)
 
 
+# ── Plotting ─────────────────────────────────────────────────────────────────
+
+def plot_similarity_results(results, output_path):
+    """Generate similarity trajectory figures from study results."""
+    config = results["config"]
+    logs_a = results["model_A"]
+    logs_b = results["model_B"]
+    logs_c = results["model_C"]
+
+    epochs_a = list(range(1, len(logs_a.get("sim_to_init", [])) + 1))
+    epochs_b = list(range(1, len(logs_b.get("sim_to_init", [])) + 1))
+    epochs_c = list(range(1, len(logs_c.get("sim_to_init", [])) + 1))
+
+    colors = {'A': '#1f77b4', 'B': '#ff7f0e', 'C': '#2ca02c'}
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(
+        f"Dictionary Similarity During Training\n"
+        f"(d_model={config['d_model']}, k={config['k']}, per_init={config['per_init']})",
+        fontsize=14, fontweight='bold'
+    )
+
+    # Panel 1: Model vs Init (with noise)
+    ax = axes[0, 0]
+    ax.plot(epochs_a, logs_a["sim_to_init"], color=colors['A'], linewidth=2, label="A (seed=42)")
+    ax.plot(epochs_b, logs_b["sim_to_init"], color=colors['B'], linewidth=2, label="B (seed=42)")
+    ax.plot(epochs_c, logs_c["sim_to_init"], color=colors['C'], linewidth=2, label="C (seed=43)")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Mean Max Cosine Similarity")
+    ax.set_title("Model vs Its Own Init (with noise)")
+    ax.legend(); ax.grid(True, alpha=0.3); ax.set_ylim(bottom=0)
+
+    # Panel 2: Model vs Clean Centers
+    ax = axes[0, 1]
+    ax.plot(epochs_a, logs_a["sim_to_clean_centers"], color=colors['A'], linewidth=2, label="A (seed=42)")
+    ax.plot(epochs_b, logs_b["sim_to_clean_centers"], color=colors['B'], linewidth=2, label="B (seed=42)")
+    ax.plot(epochs_c, logs_c["sim_to_clean_centers"], color=colors['C'], linewidth=2, label="C (seed=43)")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Mean Max Cosine Similarity")
+    ax.set_title("Model vs Clean Centers (no noise)")
+    ax.legend(); ax.grid(True, alpha=0.3); ax.set_ylim(bottom=0)
+
+    # Panel 3: Same init + same noise (A ↔ B)
+    ax = axes[1, 0]
+    if "sim_to_A" in logs_b:
+        ax.plot(epochs_b, logs_b["sim_to_A"], color='#d62728',
+                linewidth=2, label="B ↔ A (same init, same noise)")
+    ax.set_xlabel("Epoch (of model B)")
+    ax.set_ylabel("Mean Max Cosine Similarity")
+    ax.set_title("Pairwise: Same Init + Same Noise (A ↔ B)")
+    ax.legend(); ax.grid(True, alpha=0.3); ax.set_ylim(bottom=0)
+
+    # Panel 4: Same init + different noise (C ↔ A, C ↔ B)
+    ax = axes[1, 1]
+    if "sim_to_A" in logs_c:
+        ax.plot(epochs_c, logs_c["sim_to_A"], color='#9467bd',
+                linewidth=2, label="C ↔ A (different noise)")
+    if "sim_to_B" in logs_c:
+        ax.plot(epochs_c, logs_c["sim_to_B"], color='#8c564b',
+                linewidth=2, label="C ↔ B (different noise)")
+    ax.set_xlabel("Epoch (of model C)")
+    ax.set_ylabel("Mean Max Cosine Similarity")
+    ax.set_title("Pairwise: Same Init + Different Noise (C ↔ A/B)")
+    ax.legend(); ax.grid(True, alpha=0.3); ax.set_ylim(bottom=0)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Figure saved to {output_path}")
+    plt.close()
+
+    # Overlay plot
+    fig2, ax2 = plt.subplots(figsize=(12, 7))
+    ax2.set_title(
+        f"All Similarity Trajectories\n"
+        f"(d_model={config['d_model']}, k={config['k']}, per_init={config['per_init']})",
+        fontsize=13, fontweight='bold'
+    )
+    ax2.plot(epochs_a, logs_a["sim_to_init"], color=colors['A'], linewidth=2, linestyle='-', label="A → own init")
+    ax2.plot(epochs_b, logs_b["sim_to_init"], color=colors['B'], linewidth=2, linestyle='-', label="B → own init")
+    ax2.plot(epochs_c, logs_c["sim_to_init"], color=colors['C'], linewidth=2, linestyle='-', label="C → own init")
+    ax2.plot(epochs_a, logs_a["sim_to_clean_centers"], color=colors['A'], linewidth=2, linestyle='--', label="A → clean centers")
+    ax2.plot(epochs_b, logs_b["sim_to_clean_centers"], color=colors['B'], linewidth=2, linestyle='--', label="B → clean centers")
+    ax2.plot(epochs_c, logs_c["sim_to_clean_centers"], color=colors['C'], linewidth=2, linestyle='--', label="C → clean centers")
+    if "sim_to_A" in logs_b:
+        ax2.plot(epochs_b, logs_b["sim_to_A"], color='#d62728', linewidth=2.5, linestyle=':', label="B ↔ A (same noise)")
+    if "sim_to_A" in logs_c:
+        ax2.plot(epochs_c, logs_c["sim_to_A"], color='#9467bd', linewidth=2.5, linestyle=':', label="C ↔ A (diff noise)")
+    ax2.set_xlabel("Epoch", fontsize=12)
+    ax2.set_ylabel("Mean Max Cosine Similarity", fontsize=12)
+    ax2.legend(fontsize=9, ncol=2, loc='best')
+    ax2.grid(True, alpha=0.3); ax2.set_ylim(bottom=0)
+
+    overlay_path = output_path.replace('.pdf', '_overlay.pdf').replace('.png', '_overlay.png')
+    if overlay_path == output_path:
+        overlay_path = output_path + '_overlay.pdf'
+    plt.tight_layout()
+    plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
+    print(f"Overlay figure saved to {overlay_path}")
+    plt.close()
+
+    # Summary statistics
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    for name, logs in [("A", logs_a), ("B", logs_b), ("C", logs_c)]:
+        if not logs.get("sim_to_init"):
+            continue
+        print(f"\nModel {name}:")
+        print(f"  Sim to init:    {logs['sim_to_init'][0]:.4f} → {logs['sim_to_init'][-1]:.4f}")
+        print(f"  Sim to clean:   {logs['sim_to_clean_centers'][0]:.4f} → {logs['sim_to_clean_centers'][-1]:.4f}")
+        print(f"  Final loss:     {logs['avg_loss'][-1]:.4f}")
+    if "sim_to_A" in logs_b:
+        print(f"\nPairwise (same noise):")
+        print(f"  B↔A: {logs_b['sim_to_A'][0]:.4f} → {logs_b['sim_to_A'][-1]:.4f}")
+    if "sim_to_A" in logs_c:
+        print(f"\nPairwise (different noise):")
+        print(f"  C↔A: {logs_c['sim_to_A'][0]:.4f} → {logs_c['sim_to_A'][-1]:.4f}")
+    if "sim_to_B" in logs_c:
+        print(f"  C↔B: {logs_c['sim_to_B'][0]:.4f} → {logs_c['sim_to_B'][-1]:.4f}")
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
         description="Train SI-SAEs and track dictionary similarity over training"
     )
-    parser.add_argument("shard_directory", type=str,
+    parser.add_argument("shard_directory", type=str, nargs="?",
                         help="Directory containing shard_*.pt files")
+    parser.add_argument("--plot-only", type=str, default=None, metavar="RESULTS_JSON",
+                        help="Skip training; re-plot from an existing results JSON file.")
+    parser.add_argument("--output", type=str, default=None,
+                        help="Output figure path for --plot-only (default: same dir as JSON)")
     parser.add_argument("--centers-dir", type=str, default="../centers",
                         help="Directory for pre-computed centers files")
     parser.add_argument("--output-dir", type=str, default="../similarity_results",
@@ -283,8 +409,22 @@ def main():
                         help="Training seed for model C")
     parser.add_argument("--dataset-size", type=int, default=None,
                         help="Override dataset size (for scheduler computation)")
+    parser.add_argument("--no-plot", action="store_true",
+                        help="Skip figure generation after training")
 
     args = parser.parse_args()
+
+    # ── Plot-only mode ────────────────────────────────────────────────────────
+    if args.plot_only:
+        with open(args.plot_only) as f:
+            results = json.load(f)
+        out = args.output or os.path.join(os.path.dirname(args.plot_only), "similarity_study.pdf")
+        plot_similarity_results(results, out)
+        return
+
+    if not args.shard_directory:
+        parser.error("shard_directory is required unless --plot-only is specified")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if device == "cuda":
@@ -310,23 +450,14 @@ def main():
     dataset_size = args.dataset_size or len(shard_files) * samples_per_shard
     print(f"d_brain={d_brain}, estimated dataset_size={dataset_size}")
 
-    mean, std = get_dataset_stats(args.shard_directory)
-    normalizer = GPUNormalizer(mean, std).to(device)
     raw_loader = create_dataloader(args.shard_directory, args.batch_size,
                                    num_workers=8, prefetch_factor=2)
-    loader = DeviceDataLoader(raw_loader, device, normalizer)
+    loader = DeviceDataLoader(raw_loader, device)
 
-    # Validation loader
     val_loader = None
     if args.val_dir:
-        try:
-            val_mean, val_std = get_dataset_stats(args.val_dir)
-            val_normalizer = GPUNormalizer(val_mean, val_std).to(device)
-        except FileNotFoundError:
-            val_normalizer = normalizer
-        from data import create_val_dataloader
         raw_val = create_val_dataloader(args.val_dir, args.batch_size, num_workers=4, prefetch_factor=2)
-        val_loader = DeviceDataLoader(raw_val, device, val_normalizer)
+        val_loader = DeviceDataLoader(raw_val, device)
         print(f"Validation enabled")
 
     # ── Load / compute clean k-means centers ──
@@ -341,20 +472,7 @@ def main():
         torch.save(clean_centers, si_path)
     print(f"Clean centers shape: {clean_centers.shape}")
 
-    # ── Helper: create optimizer + scheduler ──
-    def make_optimizer_scheduler(model):
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        num_step_epoch = dataset_size // args.batch_size
-        total_steps = num_step_epoch * args.epochs
-        warmup_steps = total_steps // 4
-        warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.001, end_factor=1.0, total_iters=warmup_steps)
-        decay = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=(total_steps - warmup_steps), eta_min=args.lr * 0.05)
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer, schedulers=[warmup, decay], milestones=[warmup_steps])
-        return optimizer, scheduler
-
+    total_steps = (dataset_size // args.batch_size) * args.epochs
     killer = GracefulKiller()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -376,18 +494,15 @@ def main():
     sae_c, init_dict_c = create_si_sae(
         d_brain, args.d_model, k, device, clean_centers, args.per_init, args.seed_c)
 
-    # Verify A and B have same init, C is different
     ab_init_sim = mean_max_cosine_similarity(init_dict_a.to(device), init_dict_b.to(device))
     ac_init_sim = mean_max_cosine_similarity(init_dict_a.to(device), init_dict_c.to(device))
     print(f"\nInit similarity A↔B: {ab_init_sim:.6f} (should be ~1.0)")
     print(f"Init similarity A↔C: {ac_init_sim:.6f} (should be < 1.0)")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Train Model A
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Train Model A ──
     torch.manual_seed(args.train_seed_a)
     torch.cuda.manual_seed_all(args.train_seed_a)
-    opt_a, sched_a = make_optimizer_scheduler(sae_a)
+    opt_a, sched_a = create_optimizer_scheduler(sae_a, args.lr, total_steps)
     logs_a = train_with_similarity_tracking(
         sae_a, loader, opt_a, sched_a,
         nb_epochs=args.epochs, device=device, model_name="A",
@@ -398,13 +513,11 @@ def main():
     if killer.kill_now:
         print("Interrupted after Model A. Saving partial results.")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Train Model B (tracking pairwise sim to A)
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Train Model B (tracking pairwise sim to A) ──
     if not killer.kill_now:
         torch.manual_seed(args.train_seed_b)
         torch.cuda.manual_seed_all(args.train_seed_b)
-        opt_b, sched_b = make_optimizer_scheduler(sae_b)
+        opt_b, sched_b = create_optimizer_scheduler(sae_b, args.lr, total_steps)
         logs_b = train_with_similarity_tracking(
             sae_b, loader, opt_b, sched_b,
             nb_epochs=args.epochs, device=device, model_name="B",
@@ -416,13 +529,11 @@ def main():
     else:
         logs_b = {}
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Train Model C (tracking pairwise sim to A and B)
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Train Model C (tracking pairwise sim to A and B) ──
     if not killer.kill_now:
         torch.manual_seed(args.train_seed_c)
         torch.cuda.manual_seed_all(args.train_seed_c)
-        opt_c, sched_c = make_optimizer_scheduler(sae_c)
+        opt_c, sched_c = create_optimizer_scheduler(sae_c, args.lr, total_steps)
         logs_c = train_with_similarity_tracking(
             sae_c, loader, opt_c, sched_c,
             nb_epochs=args.epochs, device=device, model_name="C",
@@ -433,12 +544,6 @@ def main():
         )
     else:
         logs_c = {}
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Also retroactively compute A's similarity to B and C over B/C's epochs
-    # Since A is already trained (frozen), we just need A's final dict vs B/C at each epoch.
-    # But we already tracked B→A and C→A during their training.
-    # ══════════════════════════════════════════════════════════════════════════
 
     # ── Save results ──
     results = {
@@ -471,13 +576,15 @@ def main():
         json.dump(results, f, indent=2)
     print(f"\nResults saved to {out_path}")
 
-    # Also save model state dicts
     for name, model in [("A", sae_a), ("B", sae_b), ("C", sae_c)]:
         model_path = os.path.join(args.output_dir, f"model_{name}_state_dict.pth")
         torch.save(model.state_dict(), model_path)
     print(f"Model weights saved to {args.output_dir}")
 
-    print("\nDone! Run plot_similarity.py to generate visualizations.")
+    # ── Generate figures ──
+    if not args.no_plot:
+        fig_path = os.path.join(args.output_dir, "similarity_study.pdf")
+        plot_similarity_results(results, fig_path)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@ import os
 import glob
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 
 class ShardedDataset(IterableDataset):
@@ -50,40 +49,15 @@ class ShardedDataset(IterableDataset):
             except Exception as e:
                 print(f"Error loading {self.shard_files[shard_idx]}: {e}")
 
-def get_dataset_stats(shard_dir):
-    stats_path = os.path.join(shard_dir, "dataset_stats.pt")
-    if not os.path.exists(stats_path):
-        raise FileNotFoundError(f"Stats file not found at {stats_path}")
-    print(f"Loading stats from {stats_path}")
-    stats = torch.load(stats_path, weights_only=True)
-    return stats['mean'], stats['std']
-
-class GPUNormalizer(nn.Module):
-    def __init__(self, mean, std):
-        super().__init__()
-        self.register_buffer('mean', mean.view(1, -1))
-        self.register_buffer('std', std.view(1, -1))
-        
-    def forward(self, x):
-        # Cast to float for precision during norm, output float32
-        return (x.float() - self.mean) / (self.std + 1e-8)
-
 class DeviceDataLoader:
-    """Wraps a dataloader to move batches to device and normalize them."""
-    def __init__(self, dataloader, device, normalizer=None):
+    """Wraps a dataloader to move batches to device."""
+    def __init__(self, dataloader, device):
         self.dataloader = dataloader
         self.device = device
-        self.normalizer = normalizer
-        
+
     def __iter__(self):
         for batch in self.dataloader:
-            # 1. Non-blocking transfer to GPU
-            batch = batch.to(self.device, non_blocking=True)
-            
-            # 2. Normalize if required
-            if self.normalizer:
-                batch = self.normalizer(batch)
-                
+            batch = batch.to(self.device, non_blocking=True).float()
             yield batch
 
     def __len__(self):

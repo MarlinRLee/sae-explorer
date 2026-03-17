@@ -3,11 +3,147 @@ import os
 from collections import defaultdict
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 
 from overcomplete.metrics import l2, r2_score, l0_eps
 from overcomplete.sae.trackers import DeadCodeTracker
 from overcomplete.sae.train import extract_input
+
+
+def reanimation_loss(model, x, x_hat, dead_mask, top_k_aux=None):
+    """
+    Auxiliary loss to reanimate dead features.
+
+    Dead features are encouraged to reconstruct the residual (x - x_hat)
+    that the live features failed to capture. This follows the approach from
+    recent SAE work (Anthropic, OpenAI).
+
+    Parameters
+    ----------
+    model : TopKSAE
+        The SAE model (needs encoder weights and dictionary).
+    x : Tensor (batch, d_brain)
+        Original input.
+    x_hat : Tensor (batch, d_brain)
+        Reconstruction from the main forward pass.
+    dead_mask : Tensor (n_features,) bool
+        True for dead features.
+    top_k_aux : int or None
+        Number of dead features to activate per sample.
+        Defaults to the model's top_k.
+
+    Returns
+    -------
+    Tensor (scalar)
+        Auxiliary MSE loss on the residual, or 0 if no dead features.
+    """
+    n_dead = dead_mask.sum().item()
+    if n_dead == 0:
+        return torch.tensor(0.0, device=x.device)
+
+    if top_k_aux is None:
+        top_k_aux = model.top_k
+
+    # Clamp to number of dead features available
+    top_k_aux = min(top_k_aux, n_dead)
+
+    residual = (x - x_hat).detach()  # Don't backprop through live features
+
+    # Encode residual through dead features only
+    encoder_weight = model.encoder.final_block[0].weight  # (n_features, d_brain)
+    dead_enc_weight = encoder_weight[dead_mask]            # (n_dead, d_brain)
+    z_dead = F.relu(residual @ dead_enc_weight.T)          # (batch, n_dead)
+
+    # Apply top-k sparsity to dead features
+    if n_dead > top_k_aux:
+        topk = torch.topk(z_dead, top_k_aux, dim=-1)
+        z_dead_sparse = torch.zeros_like(z_dead)
+        z_dead_sparse.scatter_(-1, topk.indices, topk.values)
+        z_dead = z_dead_sparse
+
+    # Decode through dead dictionary atoms
+    D = model.get_dictionary()
+    dead_dict = D[dead_mask]                               # (n_dead, d_brain)
+    residual_hat = z_dead @ dead_dict                      # (batch, d_brain)
+
+    # MSE on residual reconstruction
+    return (residual - residual_hat).square().mean()
+
+
+def resample_dead_features(model, dataloader, dead_mask, optimizer, device, num_batches=5):
+    """
+    Reinitialize persistently dead features using high-loss input samples.
+
+    Parameters
+    ----------
+    model : SAE
+        The SAE model.
+    dataloader : DataLoader
+        Training data loader (used to collect seed samples).
+    dead_mask : Tensor (n_features,) bool
+        True for dead features to resample.
+    optimizer : torch.optim.Optimizer
+        Optimizer whose state needs resetting for resampled params.
+    device : str
+        Device.
+    num_batches : int
+        Number of batches to collect for computing per-sample loss.
+    """
+    n_dead = dead_mask.sum().item()
+    if n_dead == 0:
+        return 0
+
+    model.eval()
+    all_x = []
+    all_losses = []
+
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            if i >= num_batches:
+                break
+            x = extract_input(batch).float()
+            _, _, x_hat = model(x)
+            # Per-sample reconstruction loss
+            per_sample_loss = (x - x_hat.float()).square().mean(dim=-1)  # (batch,)
+            all_x.append(x)
+            all_losses.append(per_sample_loss)
+
+    model.train()
+
+    all_x = torch.cat(all_x, dim=0)           # (N, d_brain)
+    all_losses = torch.cat(all_losses, dim=0)  # (N,)
+
+    # Select top-loss samples as seeds for dead features
+    n_seeds = min(n_dead, all_x.shape[0])
+    top_indices = torch.topk(all_losses, n_seeds).indices
+    seeds = all_x[top_indices]  # (n_seeds, d_brain)
+
+    # L2-normalize seeds
+    seeds = F.normalize(seeds, dim=-1)
+
+    # Reinitialize dead encoder rows
+    encoder_weight = model.encoder.final_block[0].weight  # (n_features, d_brain)
+    dead_indices = dead_mask.nonzero(as_tuple=True)[0]
+
+    with torch.no_grad():
+        for j, idx in enumerate(dead_indices[:n_seeds]):
+            encoder_weight[idx] = seeds[j]
+
+        # Reinitialize dead dictionary rows
+        dict_weight = model.dictionary._weights  # actual parameter (nn.Parameter)
+        for j, idx in enumerate(dead_indices[:n_seeds]):
+            dict_weight[idx] = seeds[j]
+
+        # Reset optimizer state for affected parameters
+        for param in [encoder_weight, dict_weight]:
+            if param in optimizer.state:
+                state = optimizer.state[param]
+                for key in ['exp_avg', 'exp_avg_sq']:
+                    if key in state:
+                        state[key][dead_indices[:n_seeds]] = 0.0
+
+    return n_seeds
 
 
 def _compute_reconstruction_error(x, x_hat):
@@ -236,7 +372,9 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
               nb_epochs=20, clip_grad=1.0, monitoring=1, device="cpu", sae_index=1,
               checkpoint_dir=None, checkpoint_every_n_epochs=1, model_type=None,
               val_loader=None, early_stopping_patience=None, early_stopping_min_delta=0.0,
-              use_mixed_precision=False):
+              use_mixed_precision=False,
+              reanimate_coeff=0.0, resample_every_n_epochs=0,
+              dead_threshold=1e-6, reanimate_after_epoch=2):
     """
     Train a Sparse Autoencoder (SAE) model with checkpointing support.
     
@@ -276,7 +414,15 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
         Minimum improvement required for early stopping.
     use_mixed_precision : bool
         If True, use bfloat16 mixed precision training (recommended for A100).
-    
+    reanimate_coeff : float
+        Weight for auxiliary reanimation loss (0 = disabled).
+    resample_every_n_epochs : int
+        Weight resampling interval in epochs (0 = disabled).
+    dead_threshold : float
+        Frequency below which a feature is considered dead.
+    reanimate_after_epoch : int
+        Don't reanimate before this epoch (aligns with SI-SAE freeze period).
+
     Returns
     -------
     dict
@@ -335,6 +481,11 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
         if early_stopper is not None:
             print(f"  Early stopping enabled (patience={early_stopping_patience}, min_delta={early_stopping_min_delta})")
 
+    if reanimate_coeff > 0:
+        print(f"  Reanimation aux loss enabled (coeff={reanimate_coeff}, after epoch {reanimate_after_epoch})")
+    if resample_every_n_epochs > 0:
+        print(f"  Weight resampling enabled (every {resample_every_n_epochs} epochs, after epoch {reanimate_after_epoch})")
+
     frozen = False
     if model_type == "SI-SAE" and start_epoch < 2:
         for param in model.dictionary.parameters():
@@ -387,7 +538,14 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
                 if dead_tracker is None:
                     dead_tracker = DeadCodeTracker(z.shape[1], device)
                 dead_tracker.update(z.float())
-                
+
+                # Auxiliary reanimation loss for dead features
+                if reanimate_coeff > 0 and epoch >= reanimate_after_epoch:
+                    dead_mask = ~dead_tracker.alive_features
+                    if dead_mask.any():
+                        aux_loss = reanimation_loss(model, x.float(), x_hat.float(), dead_mask)
+                        loss = loss + reanimate_coeff * aux_loss
+
                 # Backward pass - gradients computed in mixed precision
                 # but accumulated in fp32 (PyTorch handles this automatically)
                 loss.backward()
@@ -402,6 +560,13 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
                 if dead_tracker is None:
                     dead_tracker = DeadCodeTracker(z.shape[1], device)
                 dead_tracker.update(z)
+
+                # Auxiliary reanimation loss for dead features
+                if reanimate_coeff > 0 and epoch >= reanimate_after_epoch:
+                    dead_mask = ~dead_tracker.alive_features
+                    if dead_mask.any():
+                        aux_loss = reanimation_loss(model, x, x_hat, dead_mask)
+                        loss = loss + reanimate_coeff * aux_loss
 
                 loss.backward()
 
@@ -420,8 +585,24 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
                 epoch_sparsity += l0_eps(z.float(), 0).sum().item()
                 _log_metrics(monitoring, logs, model, z.float(), loss, optimizer, global_step, sae_prefix) 
 
+        # Weight resampling for dead features at epoch boundaries
+        if (resample_every_n_epochs > 0
+                and epoch >= reanimate_after_epoch
+                and (epoch - reanimate_after_epoch) % resample_every_n_epochs == 0
+                and dead_tracker is not None):
+            dead_mask = ~dead_tracker.alive_features
+            n_dead = dead_mask.sum().item()
+            if n_dead > 0:
+                n_resampled = resample_dead_features(
+                    model, dataloader, dead_mask, optimizer, device
+                )
+                print(f"  [Resample] Epoch {epoch+1}: resampled {n_resampled}/{n_dead} dead features")
+                logs['resampled_features'].append(n_resampled)
+            else:
+                logs['resampled_features'].append(0)
+
         epoch_duration = time.time() - start_time
-        
+
         # Training metrics
         if monitoring and batch_count > 0 and mon_count > 0:
             avg_loss = epoch_loss / mon_count
