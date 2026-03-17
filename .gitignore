@@ -15,4 +15,12 @@ results
 *.checkpoints
 analyze_feature_dominance.py
 checkpoints
+checkpoints_*/
 trained_models
+trained_models_*/
+explorer_data*.pt
+explorer_data*.pt.bak
+explorer_data_coco/
+memory/
+.claude/
+hf_space/
