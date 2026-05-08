@@ -1,0 +1,24 @@
+# Runtime dependencies for the SAE Feature Explorer demo (scripts/explorer_app.py).
+# These are the deps needed to LAUNCH the explorer — training and precompute
+# pipelines have their own (heavier) requirements.
+
+# --- Core (always required) ---
+bokeh>=3.0,<4              # value_throttled (used by zoom + alpha sliders)
+torch>=2.4,<3              # weights_only kwarg on torch.load
+numpy>=1.24,<3
+opencv-python>=4.7         # cv2.resize for heatmap upsampling
+pillow>=10.0               # Image.Resampling.BILINEAR
+matplotlib>=3.7            # ALPHA_JET / ALPHA_VIRIDIS colormaps (Agg backend, no GUI)
+pyyaml>=6.0                # configs/models.yaml registry parsing
+
+# --- Optional: leave installed for the standard demo experience ---
+# Pulling sample data from the HuggingFace Hub + persisting feature names back.
+huggingface_hub>=0.20      # snapshot_download / hf_hub_download / upload_file
+
+# Free-text CLIP search (lazy-loaded on first out-of-vocab query).
+# Without this, only the precomputed CLIP vocab is searchable.
+transformers>=4.40,<5
+
+# Gemini auto-interp button. Only used when GOOGLE_API_KEY is set; the
+# button is auto-disabled otherwise.
+google-genai>=1.0

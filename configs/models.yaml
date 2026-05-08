@@ -1,0 +1,88 @@
+# SAE Feature Explorer — model registry
+#
+# Single source of truth for the demo's model list. Both the local launcher
+# and the HF Space entrypoint read this file via scripts/bootstrap_demo.py
+# and the explorer reads it via --registry.
+#
+# To add a new model: append one block to `models:` (see "Add a new model
+# to the demo" in README.md for the full pipeline). Exactly one entry must
+# have `primary: true`.
+
+defaults:
+  hf_data_repo:   Ramnie/sae-explorer-data    # holds .pt sidecars + .pth SAE weights
+  hf_images_repo: Ramnie/sae-explorer-images  # holds the thumbnails tarball
+  images_tarball: hf_images.tar.gz
+
+models:
+  - id:         dinov2_l11_spatial
+    label:      DINOv2 L11 Spatial
+    primary:    true
+    data_file:  explorer_data_dinov2_layer11_d10000_k100_val.pt
+    sae_file:   sae_dinov2_l11_spatial_d10000_k100.pth
+    backbone:   dinov2
+    layer:      11
+    token_type: spatial
+
+  - id:         dinov2_l8_spatial
+    label:      DINOv2 L8 Spatial
+    data_file:  explorer_data_dinov2_layer08_d10000_k50_val.pt
+    sae_file:   sae_dinov2_l08_spatial_d10000_k50.pth
+    backbone:   dinov2
+    layer:      8
+    token_type: spatial
+
+  - id:         dinov3_l24_spatial
+    label:      DINOv3 L24 Spatial
+    data_file:  explorer_data_d32000_k160_val.pt
+    sae_file:   sae_dinov3_l24_spatial_d32000_k160.pth
+    backbone:   dinov3
+    layer:      24
+    token_type: spatial
+
+  - id:         dinov3_l18_spatial
+    label:      DINOv3 L18 Spatial
+    data_file:  explorer_data_18.pt
+    sae_file:   sae_dinov3_l18_spatial_d20000_k80.pth
+    backbone:   dinov3
+    layer:      18
+    token_type: spatial
+
+  - id:         dinov3_l12_spatial
+    label:      DINOv3 L12 Spatial
+    data_file:  explorer_data_dino_layer12_d32000_k160_val.pt
+    sae_file:   sae_dinov3_l12_spatial_d32000_k160.pth
+    backbone:   dinov3
+    layer:      12
+    token_type: spatial
+
+  - id:         dinov3_l24_cls
+    label:      DINOv3 L24 CLS
+    data_file:  explorer_data_cls_d20000_k80_val.pt
+    sae_file:   sae_dinov3_l24_cls_d20000_k80.pth
+    backbone:   dinov3
+    layer:      24
+    token_type: cls
+
+  - id:         clip_l24_spatial
+    label:      CLIP L24 Spatial
+    data_file:  explorer_data_clip_spatial_d32000_k160_val.pt
+    sae_file:   sae_clip_l24_spatial_d32000_k160.pth
+    backbone:   clip
+    layer:      24
+    token_type: spatial
+
+  - id:         clip_l16_spatial
+    label:      CLIP L16 Spatial
+    data_file:  explorer_data_clip_layer16_d32000_k160_val.pt
+    sae_file:   sae_clip_l16_spatial_d32000_k160.pth
+    backbone:   clip
+    layer:      16
+    token_type: spatial
+
+  - id:         clip_l24_cls
+    label:      CLIP L24 CLS
+    data_file:  explorer_data_clip_cls_d20000_k80_val.pt
+    sae_file:   sae_clip_l24_cls_d20000_k80.pth
+    backbone:   clip
+    layer:      24
+    token_type: cls
