@@ -39,15 +39,6 @@ Re-runs skip already-downloaded files.
 
 Open http://localhost:5006/explorer_app.
 
-For a quick smoke test with no internet / no HF account:
-
-```bash
-bash scripts/run_explorer_local.sh --synthetic
-```
-
-…which writes a tiny synthetic registry under `./demo_data/` and serves
-that.
-
 ## Add a new model to the demo
 
 The demo's model list lives entirely in `configs/models.yaml`. To add one:
