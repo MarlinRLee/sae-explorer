@@ -224,10 +224,13 @@ umap_scatter = umap_fig.scatter(
     'x', 'y', source=umap_source, size=4, alpha=0.6,
     color=color_mapper,
     selection_color="red", selection_alpha=1.0, nonselection_alpha=0.3,
+    selection_line_color="black", selection_line_width=2.5,
+    selection_line_alpha=1.0,
     hit_dilation=2.5,
 )
 
-# Scale point size with zoom: bigger when zoomed in
+# Scale point size with zoom; the selected glyph stays distinctly bigger
+# than the rest so it's easy to find a single red dot among thousands.
 _zoom_cb = CustomJS(args=dict(renderer=umap_scatter, x_range=umap_fig.x_range), code="""
     const span = x_range.end - x_range.start;
     if (window._umap_base_span === undefined) {
@@ -237,7 +240,7 @@ _zoom_cb = CustomJS(args=dict(renderer=umap_scatter, x_range=umap_fig.x_range), 
     const new_size = Math.min(16, Math.max(4, 4 * Math.pow(zoom, 0.4)));
     renderer.glyph.size = new_size;
     renderer.nonselection_glyph.size = new_size;
-    renderer.selection_glyph.size = new_size;
+    renderer.selection_glyph.size = Math.max(new_size * 2.0, 12);
 """)
 umap_fig.x_range.js_on_change('start', _zoom_cb)
 umap_fig.x_range.js_on_change('end', _zoom_cb)
@@ -784,6 +787,40 @@ heatmap_alpha_slider.on_change('value_throttled', _rerender_current_feature)
 
 
 # ---------- Callbacks ----------
+def _zoom_umap_to_feature(feat: int) -> None:
+    """Recenter (and zoom in, if currently zoomed out) the UMAP figure on
+    the selected feature so the highlighted red dot is easy to find. If
+    the user is already zoomed in past the target span and the feature
+    is on-screen, the view is left alone — no jarring jumps."""
+    feat_list = umap_source.data['feature_idx']
+    if feat not in feat_list:
+        return
+    idx = feat_list.index(feat)
+    fx = float(umap_source.data['x'][idx])
+    fy = float(umap_source.data['y'][idx])
+    if not (np.isfinite(fx) and np.isfinite(fy)):
+        return
+    xs = np.asarray(umap_source.data['x'], dtype=float)
+    ys = np.asarray(umap_source.data['y'], dtype=float)
+    x_extent = float(np.nanmax(xs) - np.nanmin(xs))
+    y_extent = float(np.nanmax(ys) - np.nanmin(ys))
+    if x_extent <= 0 or y_extent <= 0:
+        return
+    target_x = x_extent * 0.3
+    target_y = y_extent * 0.3
+    cur_x = umap_fig.x_range.end - umap_fig.x_range.start
+    cur_y = umap_fig.y_range.end - umap_fig.y_range.start
+    new_x = min(cur_x, target_x)
+    new_y = min(cur_y, target_y)
+    in_view = (umap_fig.x_range.start <= fx <= umap_fig.x_range.end
+               and umap_fig.y_range.start <= fy <= umap_fig.y_range.end)
+    if new_x < cur_x - 1e-9 or new_y < cur_y - 1e-9 or not in_view:
+        umap_fig.x_range.start = fx - new_x / 2
+        umap_fig.x_range.end   = fx + new_x / 2
+        umap_fig.y_range.start = fy - new_y / 2
+        umap_fig.y_range.end   = fy + new_y / 2
+
+
 def _select_feature(feat):
     """Common entry point for selecting a feature from any UI surface:
     sets the input box, renders the detail panels, syncs the UMAP highlight,
@@ -796,6 +833,7 @@ def _select_feature(feat):
     feat_list = umap_source.data['feature_idx']
     if feat in feat_list:
         umap_source.selected.indices = [feat_list.index(feat)]
+    _zoom_umap_to_feature(feat)
     # Auto-fill the Cross-SAE Compare 'A' side. SAE B stays sticky so the
     # user can keep comparing against a fixed reference dataset.
     cmp_feat_a.value = str(feat)
@@ -808,10 +846,19 @@ _runtime.select_feature = _select_feature
 
 
 def on_umap_select(attr, old, new):
-    if new:
-        feature_idx = umap_source.data['feature_idx'][new[0]]
-        feature_input.value = str(feature_idx)
-        update_feature_display(feature_idx)
+    if not new:
+        return
+    # A tap on overlapping glyphs adds every stacked feature to
+    # ``selected.indices``, so the unrelated points also render in red.
+    # Narrow to the first hit so only one dot shows as selected; the
+    # re-entrant callback fires once more with the trimmed list.
+    if len(new) > 1:
+        umap_source.selected.indices = [new[0]]
+        return
+    feature_idx = umap_source.data['feature_idx'][new[0]]
+    feature_input.value = str(feature_idx)
+    update_feature_display(feature_idx)
+    _zoom_umap_to_feature(int(feature_idx))
 
 umap_source.selected.on_change('indices', on_umap_select)
 
