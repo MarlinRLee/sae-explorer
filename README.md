@@ -12,7 +12,7 @@ A live deployment runs at https://huggingface.co/spaces/Ramnie/sae-explorer.
 The demo runs on CPU; no GPU is required.
 
 ```bash
-git clone <this repo>
+git clone https://github.com/MarlinRLee/sae-explorer.git
 cd smart_init_stability_SAE
 python -m venv .venv
 source .venv/bin/activate
