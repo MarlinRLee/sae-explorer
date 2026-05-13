@@ -115,6 +115,11 @@ def build(display_name: Callable[[int], str],
             return
 
         top_indices = torch.topk(scores_vec, k=min(top_k, len(scores_vec))).indices.tolist()
+        # Clear prior selection before reassigning data — otherwise the
+        # DataTable can fail to repaint its cells (Bokeh 3.x quirk: stale
+        # selection state keeps the table visually frozen even though
+        # .data is updated and row clicks resolve to the new feature_idx).
+        clip_result_source.selected.indices = []
         clip_result_source.data = dict(
             feature_idx=top_indices,
             clip_score=[float(scores_vec[i]) for i in top_indices],

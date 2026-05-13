@@ -244,6 +244,10 @@ def build(on_feature_pick: Optional[Callable[[int], None]] = None):
     def _on_patch_select(attr, old, new):
         if runtime.ui.current_patch_img is None:
             return
+        # Clear prior row selection before reassigning data — otherwise the
+        # DataTable can fail to repaint cells when the new selection drops
+        # in fresh values (Bokeh 3.x quirk).
+        patch_feat_source.selected.indices = []
         if not new:
             patch_feat_source.data = dict(feature_idx=[], patch_act=[], frequency=[], mean_act=[])
             patch_info_div.text = "<i>Selection cleared.</i>"
