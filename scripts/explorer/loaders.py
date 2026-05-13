@@ -28,6 +28,7 @@ from typing import List, Optional
 import torch
 
 from .registry import ModelEntry, Registry
+from .persistence import _maybe_pull_and_merge_local
 
 
 # ---------- JSON sidecar helpers ----------
@@ -75,6 +76,16 @@ def load_dataset(path: str,
     ai_authors_file        = os.path.splitext(auto_interp_file)[0] + '_authors.json'
     fn_history_file        = os.path.splitext(names_file)[0]       + '_history.json'
     ai_history_file        = os.path.splitext(auto_interp_file)[0] + '_history.json'
+
+    # Seed each sidecar from the canonical HF dataset copy (no-op when
+    # HF_TOKEN / HF_DATASET_REPO aren't set). This is the boot half of
+    # the round-trip sync: on Spaces the local container has only the
+    # bundled snapshot, so without this every cold start would clobber
+    # remote labels on the first save.
+    for _p in (names_file, auto_interp_file,
+               fn_authors_file, ai_authors_file,
+               fn_history_file, ai_history_file):
+        _maybe_pull_and_merge_local(_p)
 
     feat_names    = _load_json_dict(names_file,         'feature names')
     auto_interp   = _load_json_dict(auto_interp_file,   'auto-interp')
