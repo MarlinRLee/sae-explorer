@@ -611,7 +611,6 @@ def update_feature_display(feature_idx):
 
     freq_val = state.feature_frequency[feat].item()
     mean_val = state.feature_mean_act[feat].item()
-    p75_val = state.feature_p75_val[feat].item()
     dead = "DEAD FEATURE" if freq_val == 0 else ""
 
     feat_name = state.feature_names.get(feat, "")
@@ -637,7 +636,6 @@ def update_feature_display(feature_idx):
     <table style="font-size:14px;border-collapse:collapse;">
     <tr><td style="padding:2px 12px"><b>Patch activation count:</b></td><td>{int(freq_val):,}</td></tr>
     <tr><td style="padding:2px 12px"><b>Mean activation:</b></td><td>{mean_val:.4f}</td></tr>
-    <tr><td style="padding:2px 12px"><b>75th pctl value:</b></td><td>{p75_val:.4f}</td></tr>
     </table>
     """
     name_input.value = feat_name
