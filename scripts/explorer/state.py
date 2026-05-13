@@ -52,12 +52,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="On dataset load, background-prewarm UMAP hover thumbnails "
                         "for the top-K most-frequent live features so the first "
                         "hover doesn't stall. 0 disables prewarm.")
-    p.add_argument("--auto-gemini", action=argparse.BooleanOptionalAction, default=True,
-                   help="When on (the default), automatically run the Gemini "
-                        "auto-interp on every feature selected that lacks both "
-                        "a manual name and an auto-interp label. Pass "
-                        "--no-auto-gemini to disable. Requires GOOGLE_API_KEY "
-                        "(or --google-api-key) to actually fire.")
+    p.add_argument("--auto-gemini", action=argparse.BooleanOptionalAction, default=False,
+                   help="When on, automatically run the Gemini auto-interp on "
+                        "every feature selected that lacks both a manual name "
+                        "and an auto-interp label. Off by default — pass "
+                        "--auto-gemini to enable. Requires GOOGLE_API_KEY (or "
+                        "--google-api-key) to actually fire.")
     return p
 
 

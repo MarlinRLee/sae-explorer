@@ -738,12 +738,12 @@ def update_feature_display(feature_idx):
         status_div.text = _status_html('ok', f'&#x2713; Feature {feat} ready.')
         _update_view_visibility()
 
-        # Auto-Gemini: when --auto-gemini is on (default) and the user
-        # has provided a Google API key, fire an auto-interp call for any
+        # Auto-Gemini: when --auto-gemini is passed and the user has
+        # provided a Google API key, fire an auto-interp call for any
         # selected feature that has neither a manual name nor an existing
-        # auto-interp label. Skipped while another Gemini call is in flight
-        # (button disabled). Easy to disable session-wide via
-        # `--no-auto-gemini` on the bokeh-serve command line.
+        # auto-interp label. Off by default — enable per session with
+        # `--auto-gemini` on the bokeh-serve command line. Skipped while
+        # another Gemini call is in flight (button disabled).
         if (args.auto_gemini
                 and _gemini_api_key
                 and not gemini_btn.disabled
