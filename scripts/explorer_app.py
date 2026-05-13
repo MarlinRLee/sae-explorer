@@ -224,6 +224,7 @@ umap_scatter = umap_fig.scatter(
     'x', 'y', source=umap_source, size=4, alpha=0.6,
     color=color_mapper,
     selection_color="red", selection_alpha=1.0, nonselection_alpha=0.3,
+    hit_dilation=2.5,
 )
 
 # Scale point size with zoom: bigger when zoomed in
@@ -233,7 +234,7 @@ _zoom_cb = CustomJS(args=dict(renderer=umap_scatter, x_range=umap_fig.x_range), 
         window._umap_base_span = span;
     }
     const zoom = window._umap_base_span / span;
-    const new_size = Math.min(12, Math.max(3, 3 * Math.pow(zoom, 0.1)));
+    const new_size = Math.min(16, Math.max(4, 4 * Math.pow(zoom, 0.4)));
     renderer.glyph.size = new_size;
     renderer.nonselection_glyph.size = new_size;
     renderer.selection_glyph.size = new_size;
