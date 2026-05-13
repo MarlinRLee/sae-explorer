@@ -382,6 +382,10 @@ def _on_dataset_switch(attr, old, new):
         log_freq=state.log_freq[state.live_mask].tolist(),
         mean_act=state.mean_act[state.live_mask].tolist(),
     )
+    color_mapper['transform'].high = (
+        float(np.nanmax(state.log_freq[state.live_mask]))
+        if state.live_mask.any() else 1.0
+    )
     umap_source.selected.indices = []
     _umap_mei_cache.clear()
     ui.umap_last_hover_feats = ()
@@ -886,28 +890,32 @@ umap_type_select = Select(
 
 def on_umap_type_change(attr, old, new):
     if new == "Activation Pattern":
+        visible_log_freq = state.log_freq[state.live_mask]
         umap_source.data = dict(
             x=state.umap_backup['act_x'],
             y=state.umap_backup['act_y'],
             feature_idx=state.umap_backup['act_feat'],
             frequency=state.freq[state.live_mask].tolist(),
-            log_freq=state.log_freq[state.live_mask].tolist(),
+            log_freq=visible_log_freq.tolist(),
             mean_act=state.mean_act[state.live_mask].tolist(),
         )
         umap_fig.title.text = "UMAP of SAE Features (by activation pattern)"
     else:
         dict_freq = state.freq[state.dict_live_mask]
-        dict_log_freq = state.log_freq[state.dict_live_mask]
+        visible_log_freq = state.log_freq[state.dict_live_mask]
         dict_mean_act = state.mean_act[state.dict_live_mask]
         umap_source.data = dict(
             x=state.umap_backup['dict_x'],
             y=state.umap_backup['dict_y'],
             feature_idx=state.umap_backup['dict_feat'],
             frequency=dict_freq.tolist(),
-            log_freq=dict_log_freq.tolist(),
+            log_freq=visible_log_freq.tolist(),
             mean_act=dict_mean_act.tolist(),
         )
         umap_fig.title.text = "UMAP of SAE Features (by dictionary geometry)"
+    color_mapper['transform'].high = (
+        float(np.nanmax(visible_log_freq)) if visible_log_freq.size else 1.0
+    )
     _umap_mei_cache.clear()
     ui.umap_last_hover_feats = ()
     hover_target_source.data = dict(html=[''])
