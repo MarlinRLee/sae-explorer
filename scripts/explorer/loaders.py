@@ -57,12 +57,18 @@ def _load_json_dict(path: str, kind: str) -> dict:
 def load_dataset(path: str,
                  label: str,
                  sae_url: Optional[str] = None,
+                 sae_file: Optional[str] = None,
+                 layer: Optional[int] = None,
                  names_file: Optional[str] = None) -> dict:
     """Load one ``explorer_data*.pt`` plus all sibling JSON / .pt sidecars.
 
     ``names_file`` overrides the default
     ``<path-without-ext>_feature_names.json``; pass it through from
     ``args.names_file`` when invoked from the entry script.
+
+    ``sae_file`` and ``layer`` come from the registry entry and are
+    surfaced on the returned dict so the patch explorer can lazy-load
+    the backbone + SAE for on-demand activation inference.
     """
     print(f"Loading [{label}] from {path} ...")
     d = torch.load(path, map_location='cpu', weights_only=False)
@@ -182,7 +188,9 @@ def load_dataset(path: str,
     else:
         entry['patch_acts'] = None
 
-    entry['sae_url'] = sae_url
+    entry['sae_url']  = sae_url
+    entry['sae_file'] = sae_file
+    entry['layer']    = layer
 
     print(f"  d={entry['d_model']}, n={entry['n_images']}, token={entry['token_type']}, "
           f"backbone={entry['backbone']}, clip={'yes' if cs is not None else 'no'}, "
@@ -209,15 +217,20 @@ def build_dataset_list(reg: Registry,
     primary_path, primary_sae_url = _entry_paths(reg, reg.primary, local_dir)
     datasets: List[dict] = [load_dataset(
         primary_path, reg.primary.label,
-        sae_url=primary_sae_url, names_file=names_file,
+        sae_url=primary_sae_url,
+        sae_file=reg.primary.sae_file,
+        layer=reg.primary.layer,
+        names_file=names_file,
     )]
     for entry in reg.compares:
         path, sae_url = _entry_paths(reg, entry, local_dir)
         datasets.append({
-            'label':   entry.label,
-            'path':    path,
-            '_lazy':   True,
-            'sae_url': sae_url,
+            'label':    entry.label,
+            'path':     path,
+            '_lazy':    True,
+            'sae_url':  sae_url,
+            'sae_file': entry.sae_file,
+            'layer':    entry.layer,
         })
     return datasets
 
@@ -228,5 +241,8 @@ def ensure_loaded(datasets: List[dict], idx: int) -> None:
     if ds.get('_lazy', False):
         print(f"[Lazy load] Loading '{ds['label']}' on first access ...")
         datasets[idx] = load_dataset(
-            ds['path'], ds['label'], sae_url=ds.get('sae_url'),
+            ds['path'], ds['label'],
+            sae_url=ds.get('sae_url'),
+            sae_file=ds.get('sae_file'),
+            layer=ds.get('layer'),
         )

@@ -200,19 +200,18 @@ def build(on_feature_pick: Optional[Callable[[int], None]] = None):
         if z_np is None:
             patch_feat_table.visible = False
             patch_info_div.text = (
-                f"<b style='color:#888'>Image {img_idx} has no pre-computed patch "
-                f"activations and no GPU runner is available. Run "
-                f"precompute_heatmaps.py with --save-patch-acts to enable "
-                f"GPU-free exploration for all images.</b>")
+                f"<b style='color:#888'>No patch activations available for "
+                f"image {img_idx} — SAE checkpoint missing or backbone setup "
+                f"failed. Check the server logs for details.</b>")
             return
 
         patch_feat_table.visible = True
         ds = state.ds
         pa = ds.get('patch_acts')
         if pa is not None and img_idx in pa['img_to_row']:
-            source_label = "patch_acts (complete)"
+            source_label = "cached patch activations"
         else:
-            source_label = "heatmap reconstruction (partial)"
+            source_label = "on-demand SAE inference"
         patch_info_div.text = (
             f"Image {img_idx} loaded ({source_label}). "
             f"Drag to select a region, or click individual patches.")
@@ -222,7 +221,7 @@ def build(on_feature_pick: Optional[Callable[[int], None]] = None):
         patch_feat_source.data = dict(feature_idx=[], patch_act=[], frequency=[], mean_act=[])
         patch_info_div.text = "<i>Selection cleared.</i>"
 
-    def _top_features_for(patch_indices, top_n: int = 20):
+    def _top_features_for(patch_indices, top_n: int = 50):
         """Sum SAE activations over selected patches; return top features.
 
         Pure-ish: reads ``runtime.ui.current_patch_z`` and

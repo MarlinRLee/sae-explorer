@@ -68,6 +68,13 @@ EOF
 cp "$REPO_ROOT/src/clip_utils.py" "$HF_DIR/src/clip_utils.py"
 echo "  -> hf_space/src/clip_utils.py"
 
+# backbone_runners.py + precompute_utils.py — used by the explorer's
+# on-demand patch-activations inference path.
+cp "$REPO_ROOT/src/backbone_runners.py" "$HF_DIR/src/backbone_runners.py"
+cp "$REPO_ROOT/src/precompute_utils.py" "$HF_DIR/src/precompute_utils.py"
+echo "  -> hf_space/src/backbone_runners.py"
+echo "  -> hf_space/src/precompute_utils.py"
+
 # bootstrap_demo.py — registry-driven downloader + launcher used by entrypoint.sh
 cp "$REPO_ROOT/scripts/bootstrap_demo.py" "$HF_DIR/scripts/bootstrap_demo.py"
 echo "  -> hf_space/scripts/bootstrap_demo.py"
@@ -84,7 +91,8 @@ fi
 
 cd "$HF_DIR"
 git add scripts/explorer_app.py scripts/explorer scripts/bootstrap_demo.py \
-        configs/models.yaml src/clip_utils.py Dockerfile entrypoint.sh
+        configs/models.yaml src/clip_utils.py src/backbone_runners.py \
+        src/precompute_utils.py Dockerfile entrypoint.sh
 
 if git diff --cached --quiet; then
     echo "No changes to commit."

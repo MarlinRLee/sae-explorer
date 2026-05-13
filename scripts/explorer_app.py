@@ -52,7 +52,7 @@ from explorer.html_views import (
 )
 from explorer import runtime as _runtime
 from explorer.runtime import load_image
-from explorer.activations import _reconstruct_z_from_heatmaps, compute_patch_activations
+from explorer.activations import compute_patch_activations
 from explorer.rendering import (
     _render_executor, _umap_mei_cache,
     UMAP_THUMB_PX, UMAP_THUMBS_PER_FEAT,
@@ -167,8 +167,9 @@ def _display_name(feat: int) -> str:
     return f"[auto] {a}" if a else ""
 
 
-# `_reconstruct_z_from_heatmaps` and `compute_patch_activations` live in
-# explorer/activations.py and are imported above.
+# `compute_patch_activations` lives in explorer/activations.py and is
+# imported above; it lazy-loads backbone + SAE for on-demand inference
+# when the dataset has no patch_acts sidecar.
 
 
 # ---------- Image helpers ----------
