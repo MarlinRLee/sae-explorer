@@ -845,15 +845,29 @@ def _select_feature(feat):
 _runtime.select_feature = _select_feature
 
 
+# A tap on overlapping glyphs adds every stacked feature to
+# ``selected.indices``. Doing the narrowing in Python causes a visible
+# flash of all hits rendering red before the callback round-trip
+# completes; a browser-side JS callback trims to the topmost glyph
+# (last in source order = drawn on top) in the same tick the tap
+# fires, so the multi-selection state never reaches the canvas.
+umap_source.selected.js_on_change('indices', CustomJS(
+    args=dict(source=umap_source),
+    code="""
+        const sel = source.selected.indices;
+        if (sel.length > 1) {
+            source.selected.indices = [sel[sel.length - 1]];
+        }
+    """,
+))
+
+
 def on_umap_select(attr, old, new):
     if not new:
         return
-    # A tap on overlapping glyphs adds every stacked feature to
-    # ``selected.indices``, so the unrelated points also render in red.
-    # Narrow to the first hit so only one dot shows as selected; the
-    # re-entrant callback fires once more with the trimmed list.
     if len(new) > 1:
-        umap_source.selected.indices = [new[0]]
+        # Wait for the JS callback above to trim to a single index; this
+        # Python handler will re-fire with the trimmed list.
         return
     feature_idx = umap_source.data['feature_idx'][new[0]]
     feature_input.value = str(feature_idx)
