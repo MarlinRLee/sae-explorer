@@ -96,7 +96,18 @@ image source for everything.
 | Gemini auto-interp | export `GOOGLE_API_KEY=...` | "Label with Gemini" button calls `gemini-2.5-flash` on the top-activating images and saves the returned label. |
 | Persisted feature names | export `HF_TOKEN=...` and `HF_DATASET_REPO=Ramnie/sae-explorer-data` | Names typed into the demo are debounce-pushed to the HF dataset repo so they persist across sessions. |
 
-All three are inert without the relevant environment variables.
+All three are inert without the relevant environment variables. Export
+them in the same shell you launch from — `bash scripts/run_explorer_local.sh`
+inherits the env into the bokeh subprocess:
+
+```bash
+export GOOGLE_API_KEY=AIza...        # enables the Label with Gemini button
+export HF_TOKEN=hf_...               # enables persisted feature names
+bash scripts/run_explorer_local.sh
+```
+
+Add the `export` lines to `~/.bashrc` (or a project-local `.env` you
+`source`) to make them stick across terminals.
 
 ## Project layout
 
