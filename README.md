@@ -13,7 +13,7 @@ The demo runs on CPU; no GPU is required.
 
 ```bash
 git clone https://github.com/MarlinRLee/sae-explorer.git
-cd smart_init_stability_SAE
+cd sae-explorer
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
